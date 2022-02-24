@@ -1,8 +1,10 @@
+//go:build !baremetal
 // +build !baremetal
 
 package bluetooth
 
 import (
+	"github.com/godbus/dbus/v5"
 	"github.com/muka/go-bluetooth/api/service"
 	"github.com/muka/go-bluetooth/bluez/profile/gatt"
 )
@@ -91,6 +93,17 @@ func (a *Adapter) AddService(s *Service) error {
 	}
 
 	return app.Run()
+}
+
+// UpdateValue replaces the characteristic value with a new value without handling write callbacks
+func (c *Characteristic) UpdateValue(p []byte) (n int, err error) {
+	if len(p) == 0 {
+		return 0, nil // nothing to do
+	}
+
+	c.handle.Properties.Value = p
+	c.handle.DBusProperties().Instance().Set(c.handle.Interface(), "Value", dbus.MakeVariant(p))
+	return len(p), nil
 }
 
 // Write replaces the characteristic value with a new value.
