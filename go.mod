@@ -2,7 +2,7 @@ module tinygo.org/x/bluetooth
 
 go 1.15
 
-replace github.com/muka/go-bluetooth => /home/arch/.work/go-bluetooth
+replace github.com/muka/go-bluetooth => github.com/skast96/go-bluetooth v0.0.0-20220323113240-9694dc08e349
 
 require (
 	github.com/JuulLabs-OSS/cbgo v0.0.2
