@@ -85,6 +85,14 @@ func (a *Adapter) AddService(s *Service) error {
 			})
 		}
 
+		if char.NotifyEvent != nil {
+			callback := char.NotifyEvent
+			bluezChar.OnNotify(func(c *service.Char, notify bool) error {
+				callback(0, notify)
+				return nil
+			})
+		}
+
 		// Add characteristic to the service, to activate it.
 		err = bluezService.AddChar(bluezChar)
 		if err != nil {

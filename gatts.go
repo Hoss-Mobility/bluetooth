@@ -15,9 +15,10 @@ type Service struct {
 type CharacteristicConfig struct {
 	Handle *Characteristic
 	UUID
-	Value      []byte
-	Flags      CharacteristicPermissions
-	WriteEvent func(client Connection, offset int, value []byte)
+	Value       []byte
+	Flags       CharacteristicPermissions
+	WriteEvent  func(client Connection, offset int, value []byte)
+	NotifyEvent func(client Connection, notify bool)
 }
 
 // CharacteristicPermissions lists a number of basic permissions/capabilities
