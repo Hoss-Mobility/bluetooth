@@ -1,12 +1,9 @@
+//go:build softdevice
 // +build softdevice
 
 package bluetooth
 
 /*
-// Define SoftDevice functions as regular function declarations (not inline
-// static functions).
-#define SVCALL_AS_NORMAL_FUNCTION
-
 #include "ble.h"
 */
 import "C"
@@ -39,7 +36,7 @@ func (s shortUUID) UUID() UUID {
 // IsIn checks the passed in slice of short UUIDs to see if this uuid is in it.
 func (s shortUUID) IsIn(uuids []C.ble_uuid_t) bool {
 	for _, u := range uuids {
-		if u == s {
+		if shortUUID(u) == s {
 			return true
 		}
 	}

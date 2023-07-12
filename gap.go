@@ -25,12 +25,12 @@ func (mac MACAddress) IsRandom() bool {
 }
 
 // SetRandom if is a random address.
-func (mac MACAddress) SetRandom(val bool) {
+func (mac *MACAddress) SetRandom(val bool) {
 	mac.isRandom = val
 }
 
 // Set the address
-func (mac MACAddress) Set(val string) {
+func (mac *MACAddress) Set(val string) {
 	m, err := ParseMAC(val)
 	if err != nil {
 		return
@@ -69,32 +69,11 @@ func NewDuration(interval time.Duration) Duration {
 // Connection is a numeric identifier that indicates a connection handle.
 type Connection uint16
 
-// Addresser contains a Bluetooth address, which is a MAC address plus some extra
-// information.
-type Addresser interface {
-	// String of the address
-	String() string
-
-	// Set the address
-	Set(val string)
-
-	// Is this address a random address?
-	// Bluetooth addresses are roughly split in two kinds: public
-	// (IEEE-assigned) addresses and random (not IEEE assigned) addresses.
-	// "Random" here doesn't mean it is exactly random but at least it looks
-	// random. Sometimes, it contains a hash.
-	// For more information:
-	// https://www.novelbits.io/bluetooth-address-privacy-ble/
-	// Set the address
-	SetRandom(bool)
-	IsRandom() bool
-}
-
 // ScanResult contains information from when an advertisement packet was
 // received. It is passed as a parameter to the callback of the Scan method.
 type ScanResult struct {
 	// Bluetooth address of the scanned device.
-	Address Addresser
+	Address Address
 
 	// RSSI the last time a packet from this device has been received.
 	RSSI int16
@@ -126,6 +105,10 @@ type AdvertisementPayload interface {
 	// Bytes returns the raw advertisement packet, if available. It returns nil
 	// if this data is not available.
 	Bytes() []byte
+
+	// ManufacturerData returns a map with all the manufacturer data present in the
+	//advertising. IT may be empty.
+	ManufacturerData() map[uint16][]byte
 }
 
 // AdvertisementFields contains advertisement fields in structured form.
@@ -138,6 +121,9 @@ type AdvertisementFields struct {
 	// part of the advertisement packet, in data types such as "complete list of
 	// 128-bit UUIDs".
 	ServiceUUIDs []UUID
+
+	// ManufacturerData is the manufacturer data of the advertisement.
+	ManufacturerData map[uint16][]byte
 }
 
 // advertisementFields wraps AdvertisementFields to implement the
@@ -168,6 +154,11 @@ func (p *advertisementFields) HasServiceUUID(uuid UUID) bool {
 // original raw advertisement data available.
 func (p *advertisementFields) Bytes() []byte {
 	return nil
+}
+
+// ManufacturerData returns the underlying ManufacturerData field.
+func (p *advertisementFields) ManufacturerData() map[uint16][]byte {
+	return p.AdvertisementFields.ManufacturerData
 }
 
 // rawAdvertisementPayload encapsulates a raw advertisement packet. Methods to
@@ -256,6 +247,25 @@ func (buf *rawAdvertisementPayload) HasServiceUUID(uuid UUID) bool {
 		}
 		return false
 	}
+}
+
+// ManufacturerData returns the manufacturer data in the advertisement payload.
+func (buf *rawAdvertisementPayload) ManufacturerData() map[uint16][]byte {
+	mData := make(map[uint16][]byte)
+	data := buf.Bytes()
+	for len(data) >= 2 {
+		fieldLength := data[0]
+		if int(fieldLength)+1 > len(data) {
+			// Invalid field length.
+			return nil
+		}
+		// If this is the manufacturer data
+		if byte(0xFF) == data[1] {
+			mData[uint16(data[2])+(uint16(data[3])<<8)] = data[4 : fieldLength+1]
+		}
+		data = data[fieldLength+1:]
+	}
+	return mData
 }
 
 // reset restores this buffer to the original state.

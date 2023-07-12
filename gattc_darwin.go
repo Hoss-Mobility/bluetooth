@@ -4,7 +4,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/JuulLabs-OSS/cbgo"
+	"github.com/tinygo-org/cbgo"
 )
 
 // DiscoverServices starts a service discovery procedure. Pass a list of service
@@ -18,7 +18,7 @@ func (d *Device) DiscoverServices(uuids []UUID) ([]DeviceService, error) {
 	d.prph.DiscoverServices([]cbgo.UUID{})
 
 	// clear cache of services
-	d.services = make(map[UUID]*DeviceService)
+	d.services = make(map[UUID]DeviceService)
 
 	// wait on channel for service discovery
 	select {
@@ -42,12 +42,14 @@ func (d *Device) DiscoverServices(uuids []UUID) ([]DeviceService, error) {
 			}
 
 			svc := DeviceService{
-				uuidWrapper: dsvcuuid,
-				device:      d,
-				service:     dsvc,
+				deviceService: &deviceService{
+					uuidWrapper: dsvcuuid,
+					device:      d,
+					service:     dsvc,
+				},
 			}
 			svcs = append(svcs, svc)
-			d.services[svc.uuidWrapper] = &svc
+			d.services[svc.uuidWrapper] = svc
 		}
 		return svcs, nil
 	case <-time.NewTimer(10 * time.Second).C:
@@ -61,11 +63,16 @@ type uuidWrapper = UUID
 
 // DeviceService is a BLE service on a connected peripheral device.
 type DeviceService struct {
+	*deviceService // embdedded as pointer to enable returning by []value in DiscoverServices
+}
+
+type deviceService struct {
 	uuidWrapper
 
 	device *Device
 
-	service cbgo.Service
+	service         cbgo.Service
+	characteristics map[UUID]DeviceCharacteristic
 }
 
 // UUID returns the UUID for this DeviceService.
@@ -88,43 +95,63 @@ func (s *DeviceService) DiscoverCharacteristics(uuids []UUID) ([]DeviceCharacter
 	s.device.prph.DiscoverCharacteristics(cbuuids, s.service)
 
 	// clear cache of characteristics
-	s.device.characteristics = make(map[UUID]*DeviceCharacteristic)
+	s.characteristics = make(map[UUID]DeviceCharacteristic)
 
 	// wait on channel for characteristic discovery
 	select {
 	case <-s.device.charsChan:
-		chars := []DeviceCharacteristic{}
+		var chars []DeviceCharacteristic
+		if len(uuids) > 0 {
+			// The caller wants to get a list of characteristics in a specific
+			// order.
+			chars = make([]DeviceCharacteristic, len(uuids))
+		}
 		for _, dchar := range s.service.Characteristics() {
 			dcuuid, _ := ParseUUID(dchar.UUID().String())
-			// add if in our original list
 			if len(uuids) > 0 {
-				found := false
-				for _, uuid := range uuids {
-					if dcuuid.String() == uuid.String() {
+				// The caller wants to get a list of characteristics in a
+				// specific order. Check whether this is one of those.
+				for i, uuid := range uuids {
+					if chars[i] != (DeviceCharacteristic{}) {
+						// To support multiple identical characteristics, we
+						// need to ignore the characteristics that are already
+						// found. See:
+						// https://github.com/tinygo-org/bluetooth/issues/131
+						continue
+					}
+					if dcuuid == uuid {
 						// one of the characteristics we're looking for.
-						found = true
+						chars[i] = s.makeCharacteristic(dcuuid, dchar)
 						break
 					}
 				}
-				if !found {
-					continue
-				}
+			} else {
+				// The caller wants to get all characteristics, in any order.
+				chars = append(chars, s.makeCharacteristic(dcuuid, dchar))
 			}
-
-			char := DeviceCharacteristic{
-				deviceCharacteristic: &deviceCharacteristic{
-					uuidWrapper:    dcuuid,
-					service:        s,
-					characteristic: dchar,
-				},
+		}
+		for _, char := range chars {
+			if char == (DeviceCharacteristic{}) {
+				return nil, errors.New("bluetooth: did not find all requested characteristic")
 			}
-			chars = append(chars, char)
-			s.device.characteristics[char.uuidWrapper] = &char
 		}
 		return chars, nil
 	case <-time.NewTimer(10 * time.Second).C:
 		return nil, errors.New("timeout on DiscoverCharacteristics")
 	}
+}
+
+// Small helper to create a DeviceCharacteristic object.
+func (s *DeviceService) makeCharacteristic(uuid UUID, dchar cbgo.Characteristic) DeviceCharacteristic {
+	char := DeviceCharacteristic{
+		deviceCharacteristic: &deviceCharacteristic{
+			uuidWrapper:    uuid,
+			service:        s,
+			characteristic: dchar,
+		},
+	}
+	s.characteristics[char.uuidWrapper] = char
+	return char
 }
 
 // DeviceCharacteristic is a BLE characteristic on a connected peripheral
@@ -171,6 +198,11 @@ func (c DeviceCharacteristic) EnableNotifications(callback func(buf []byte)) err
 	c.service.device.prph.SetNotify(true, c.characteristic)
 
 	return nil
+}
+
+// GetMTU returns the MTU for the characteristic.
+func (c DeviceCharacteristic) GetMTU() (uint16, error) {
+	return uint16(c.service.device.prph.MaximumWriteValueLength(false)), nil
 }
 
 // Read reads the current characteristic value.

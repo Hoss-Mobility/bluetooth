@@ -1,3 +1,4 @@
+//go:build (softdevice && s113v7) || (softdevice && s132v6) || (softdevice && s140v6) || (softdevice && s140v7)
 // +build softdevice,s113v7 softdevice,s132v6 softdevice,s140v6 softdevice,s140v7
 
 package bluetooth
@@ -5,10 +6,6 @@ package bluetooth
 // This file defines the SoftDevice adapter for all nrf52-series chips.
 
 /*
-// Define SoftDevice functions as regular function declarations (not inline
-// static functions).
-#define SVCALL_AS_NORMAL_FUNCTION
-
 #include "nrf_sdm.h"
 #include "nrf_nvic.h"
 #include "ble.h"

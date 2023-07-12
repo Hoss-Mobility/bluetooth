@@ -1,12 +1,9 @@
+//go:build softdevice && s110v8
 // +build softdevice,s110v8
 
 package bluetooth
 
 /*
-// Define SoftDevice functions as regular function declarations (not inline
-// static functions).
-#define SVCALL_AS_NORMAL_FUNCTION
-
 #include "ble_gap.h"
 */
 import "C"
@@ -60,6 +57,13 @@ func (a *Advertisement) Configure(options AdvertisementOptions) error {
 func (a *Advertisement) Start() error {
 	a.isAdvertising.Set(1)
 	errCode := a.start()
+	return makeError(errCode)
+}
+
+// Stop advertisement.
+func (a *Advertisement) Stop() error {
+	a.isAdvertising.Set(0)
+	errCode := C.sd_ble_gap_adv_stop()
 	return makeError(errCode)
 }
 

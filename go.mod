@@ -2,15 +2,17 @@ module tinygo.org/x/bluetooth
 
 go 1.15
 
-//replace github.com/muka/go-bluetooth => github.com/skast96/go-bluetooth v0.0.0-20220323113240-9694dc08e349
-
 require (
-	github.com/JuulLabs-OSS/cbgo v0.0.2
-	github.com/go-ole/go-ole v1.2.4
+	github.com/go-ole/go-ole v1.2.6
 	github.com/godbus/dbus/v5 v5.0.3
-	github.com/muka/go-bluetooth v0.0.0-20220323170840-382ca1d29f29
-	golang.org/x/crypto v0.0.0-20200622213623-75b288015ac9
-	golang.org/x/sys v0.0.0-20200826173525-f9321e4c35a6 // indirect
-	tinygo.org/x/drivers v0.15.1
+	github.com/muka/go-bluetooth v0.0.0-20220830075246-0746e3a1ea53
+	github.com/saltosystems/winrt-go v0.0.0-20230510070731-e096b9afa761
+	github.com/sirupsen/logrus v1.9.0 // indirect
+	github.com/tinygo-org/cbgo v0.0.4
+	golang.org/x/crypto v0.0.0-20210921155107-089bfa567519
+	golang.org/x/sys v0.0.0-20220829200755-d48e67d00261 // indirect
+	golang.org/x/term v0.0.0-20210927222741-03fcf44c2211 // indirect
+	tinygo.org/x/drivers v0.25.0
+	tinygo.org/x/tinyfont v0.4.0 // indirect
 	tinygo.org/x/tinyterm v0.1.0
 )

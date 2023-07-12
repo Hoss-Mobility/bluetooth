@@ -1,15 +1,21 @@
+//go:build !baremetal
 // +build !baremetal
 
 package bluetooth
 
 import (
+	"context"
+	"errors"
 	"strings"
 
 	"github.com/godbus/dbus/v5"
 	"github.com/muka/go-bluetooth/api"
+	"github.com/muka/go-bluetooth/bluez"
 	"github.com/muka/go-bluetooth/bluez/profile/advertising"
 	"github.com/muka/go-bluetooth/bluez/profile/device"
 )
+
+var errAdvertisementNotStarted = errors.New("bluetooth: stop advertisement that was not started")
 
 // Address contains a Bluetooth MAC address.
 type Address struct {
@@ -21,6 +27,7 @@ type Advertisement struct {
 	adapter       *Adapter
 	advertisement *api.Advertisement
 	properties    *advertising.LEAdvertisement1Properties
+	cancel        func()
 }
 
 // DefaultAdvertisement returns the default advertisement instance but does not
@@ -59,10 +66,20 @@ func (a *Advertisement) Start() error {
 	if a.advertisement != nil {
 		panic("todo: start advertisement a second time")
 	}
-	_, err := api.ExposeAdvertisement(a.adapter.id, a.properties, uint32(a.properties.Timeout))
+	cancel, err := api.ExposeAdvertisement(a.adapter.id, a.properties, uint32(a.properties.Timeout))
 	if err != nil {
 		return err
 	}
+	a.cancel = cancel
+	return nil
+}
+
+// Stop advertisement. May only be called after it has been started.
+func (a *Advertisement) Stop() error {
+	if a.cancel == nil {
+		return errAdvertisementNotStarted
+	}
+	a.cancel()
 	return nil
 }
 
@@ -182,6 +199,13 @@ func (a *Adapter) Scan(callback func(*Adapter, ScanResult)) error {
 						props.Name = val.Value().(string)
 					case "UUIDs":
 						props.UUIDs = val.Value().([]string)
+					case "ManufacturerData":
+						// work around for https://github.com/muka/go-bluetooth/issues/163
+						mData := make(map[uint16]interface{})
+						for k, v := range val.Value().(map[uint16]dbus.Variant) {
+							mData[k] = v.Value().(interface{})
+						}
+						props.ManufacturerData = mData
 					}
 				}
 				callback(a, makeScanResult(props))
@@ -222,13 +246,25 @@ func makeScanResult(props *device.Device1Properties) ScanResult {
 	a := Address{MACAddress{MAC: addr}}
 	a.SetRandom(props.AddressType == "random")
 
+	mData := make(map[uint16][]byte)
+	for k, v := range props.ManufacturerData {
+		// can be either variant or just byte value
+		switch val := v.(type) {
+		case dbus.Variant:
+			mData[k] = val.Value().([]byte)
+		case []byte:
+			mData[k] = val
+		}
+	}
+
 	return ScanResult{
 		RSSI:    props.RSSI,
 		Address: a,
 		AdvertisementPayload: &advertisementFields{
 			AdvertisementFields{
-				LocalName:    props.Name,
-				ServiceUUIDs: serviceUUIDs,
+				LocalName:        props.Name,
+				ServiceUUIDs:     serviceUUIDs,
+				ManufacturerData: mData,
 			},
 		},
 	}
@@ -236,39 +272,92 @@ func makeScanResult(props *device.Device1Properties) ScanResult {
 
 // Device is a connection to a remote peripheral.
 type Device struct {
-	device *device.Device1
+	device      *device.Device1             // bluez device interface
+	ctx         context.Context             // context for our event watcher, canceled on disconnect event
+	cancel      context.CancelFunc          // cancel function to halt our event watcher context
+	propchanged chan *bluez.PropertyChanged // channel that device property changes will show up on
+	adapter     *Adapter                    // the adapter that was used to form this device connection
+	address     Address                     // the address of the device
 }
 
 // Connect starts a connection attempt to the given peripheral device address.
 //
 // On Linux and Windows, the IsRandom part of the address is ignored.
-func (a *Adapter) Connect(address Addresser, params ConnectionParams) (*Device, error) {
-	adr := address.(Address)
-	devicePath := dbus.ObjectPath(string(a.adapter.Path()) + "/dev_" + strings.Replace(adr.MAC.String(), ":", "_", -1))
+func (a *Adapter) Connect(address Address, params ConnectionParams) (*Device, error) {
+	devicePath := dbus.ObjectPath(string(a.adapter.Path()) + "/dev_" + strings.Replace(address.MAC.String(), ":", "_", -1))
 	dev, err := device.NewDevice1(devicePath)
 	if err != nil {
 		return nil, err
 	}
+
+	device := &Device{
+		device:  dev,
+		adapter: a,
+		address: address,
+	}
+	device.ctx, device.cancel = context.WithCancel(context.Background())
+	device.watchForConnect() // Set this up before we trigger a connection so we can capture the connect event
 
 	if !dev.Properties.Connected {
 		// Not yet connected, so do it now.
 		// The properties have just been read so this is fresh data.
 		err := dev.Connect()
 		if err != nil {
+			device.cancel() // cancel our watcher routine
 			return nil, err
 		}
 	}
 
-	// TODO: a proper async callback.
-	a.connectHandler(nil, true)
-
-	return &Device{
-		device: dev,
-	}, nil
+	return device, nil
 }
 
 // Disconnect from the BLE device. This method is non-blocking and does not
 // wait until the connection is fully gone.
 func (d *Device) Disconnect() error {
+	// we don't call our cancel function here, instead we wait for the
+	// property change in `watchForConnect` and cancel things then
 	return d.device.Disconnect()
+}
+
+// watchForConnect watches for a signal from the bluez device interface that indicates a Connection/Disconnection.
+//
+// We can add extra signals to watch for here,
+// see https://git.kernel.org/pub/scm/bluetooth/bluez.git/tree/doc/device-api.txt, for a full list
+func (d *Device) watchForConnect() error {
+	var err error
+	d.propchanged, err = d.device.WatchProperties()
+	if err != nil {
+		return err
+	}
+
+	go func() {
+		for {
+			select {
+			case changed := <-d.propchanged:
+
+				// we will receive a nil if bluez.UnwatchProperties(a, ch) is called, if so we can stop watching
+				if changed == nil {
+					d.cancel()
+					return
+				}
+
+				switch changed.Name {
+				case "Connected":
+					// Send off a notification indicating we have connected or disconnected
+					d.adapter.connectHandler(d.address, d.device.Properties.Connected)
+
+					if !d.device.Properties.Connected {
+						d.cancel()
+						return
+					}
+				}
+
+				continue
+			case <-d.ctx.Done():
+				return
+			}
+		}
+	}()
+
+	return nil
 }

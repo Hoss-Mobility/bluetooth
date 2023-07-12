@@ -1,12 +1,9 @@
+//go:build (softdevice && s132v6) || (softdevice && s140v6) || (softdevice && s140v7)
 // +build softdevice,s132v6 softdevice,s140v6 softdevice,s140v7
 
 package bluetooth
 
 /*
-// Define SoftDevice functions as regular function declarations (not inline
-// static functions).
-#define SVCALL_AS_NORMAL_FUNCTION
-
 #include "ble_gattc.h"
 */
 import "C"
@@ -134,7 +131,7 @@ func (d *Device) DiscoverServices(uuids []UUID) ([]DeviceService, error) {
 
 		// Store the discovered service.
 		svc := DeviceService{
-			uuid:             suuid,
+			uuid:             shortUUID(suuid),
 			connectionHandle: d.connectionHandle,
 			startHandle:      startHandle,
 			endHandle:        endHandle,
@@ -276,7 +273,7 @@ func (s *DeviceService) DiscoverCharacteristics(uuids []UUID) ([]DeviceCharacter
 			permissions |= CharacteristicIndicatePermission
 		}
 
-		dc := DeviceCharacteristic{uuid: discoveringCharacteristic.uuid}
+		dc := DeviceCharacteristic{uuid: shortUUID(discoveringCharacteristic.uuid)}
 		dc.permissions = permissions
 		dc.valueHandle = foundCharacteristicHandle
 
@@ -449,4 +446,9 @@ func (c *DeviceCharacteristic) Read(data []byte) (n int, err error) {
 	readingCharacteristic.length = 0
 
 	return
+}
+
+// GetMTU returns the MTU for the characteristic.
+func (c DeviceCharacteristic) GetMTU() (uint16, error) {
+	return uint16(C.BLE_GATT_ATT_MTU_DEFAULT), nil
 }

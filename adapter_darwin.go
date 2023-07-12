@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/JuulLabs-OSS/cbgo"
+	"github.com/tinygo-org/cbgo"
 )
 
 // Adapter is a connection to BLE devices.
@@ -24,7 +24,7 @@ type Adapter struct {
 	// used to allow multiple callers to call Connect concurrently.
 	connectMap sync.Map
 
-	connectHandler func(device Addresser, connected bool)
+	connectHandler func(device Address, connected bool)
 }
 
 // DefaultAdapter is the default adapter on the system.
@@ -35,7 +35,7 @@ var DefaultAdapter = &Adapter{
 	pm:         cbgo.NewPeripheralManager(nil),
 	connectMap: sync.Map{},
 
-	connectHandler: func(device Addresser, connected bool) {
+	connectHandler: func(device Address, connected bool) {
 		return
 	},
 }
@@ -100,6 +100,21 @@ func (cmd *centralManagerDelegate) DidDiscoverPeripheral(cmgr cbgo.CentralManage
 	}
 }
 
+// DidDisconnectPeripheral when peripheral is disconnected.
+func (cmd *centralManagerDelegate) DidDisconnectPeripheral(cmgr cbgo.CentralManager, prph cbgo.Peripheral, err error) {
+	id := prph.Identifier().String()
+	addr := Address{}
+	uuid, _ := ParseUUID(id)
+	addr.UUID = uuid
+	cmd.a.connectHandler(addr, false)
+
+	// like with DidConnectPeripheral, check if we have a chan allocated for this and send through the peripheral
+	// this will only be true if the receiving side is still waiting for a connection to complete
+	if ch, ok := cmd.a.connectMap.LoadAndDelete(id); ok {
+		ch.(chan cbgo.Peripheral) <- prph
+	}
+}
+
 // DidConnectPeripheral when peripheral is connected.
 func (cmd *centralManagerDelegate) DidConnectPeripheral(cmgr cbgo.CentralManager, prph cbgo.Peripheral) {
 	id := prph.Identifier().String()
@@ -126,6 +141,13 @@ func makeScanResult(prph cbgo.Peripheral, advFields cbgo.AdvFields, rssi int) Sc
 		serviceUUIDs = append(serviceUUIDs, parsedUUID)
 	}
 
+	manufacturerData := make(map[uint16][]byte)
+	if len(advFields.ManufacturerData) > 2 {
+		manufacturerID := uint16(advFields.ManufacturerData[0])
+		manufacturerID += uint16(advFields.ManufacturerData[1]) << 8
+		manufacturerData[manufacturerID] = advFields.ManufacturerData[2:]
+	}
+
 	// Peripheral UUID is randomized on macOS, which means to
 	// different centrals it will appear to have a different UUID.
 	return ScanResult{
@@ -135,8 +157,9 @@ func makeScanResult(prph cbgo.Peripheral, advFields cbgo.AdvFields, rssi int) Sc
 		},
 		AdvertisementPayload: &advertisementFields{
 			AdvertisementFields{
-				LocalName:    advFields.LocalName,
-				ServiceUUIDs: serviceUUIDs,
+				LocalName:        advFields.LocalName,
+				ServiceUUIDs:     serviceUUIDs,
+				ManufacturerData: manufacturerData,
 			},
 		},
 	}

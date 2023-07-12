@@ -1,14 +1,21 @@
+//go:build !baremetal
 // +build !baremetal
 
 package bluetooth
 
 import (
 	"errors"
+	"sort"
 	"strings"
 	"time"
 
+	"github.com/godbus/dbus/v5"
 	"github.com/muka/go-bluetooth/bluez"
 	"github.com/muka/go-bluetooth/bluez/profile/gatt"
+)
+
+var (
+	errDupNotif = errors.New("unclosed notifications")
 )
 
 // UUIDWrapper is a type alias for UUID so we ensure no conflicts with
@@ -69,15 +76,20 @@ func (d *Device) DiscoverServices(uuids []UUID) ([]DeviceService, error) {
 	if err != nil {
 		return nil, err
 	}
+	objects := make([]string, 0, len(list))
 	for objectPath := range list {
-		if !strings.HasPrefix(string(objectPath), string(d.device.Path())+"/service") {
+		objects = append(objects, string(objectPath))
+	}
+	sort.Strings(objects)
+	for _, objectPath := range objects {
+		if !strings.HasPrefix(objectPath, string(d.device.Path())+"/service") {
 			continue
 		}
-		suffix := string(objectPath)[len(d.device.Path()+"/"):]
+		suffix := objectPath[len(d.device.Path()+"/"):]
 		if len(strings.Split(suffix, "/")) != 1 {
 			continue
 		}
-		service, err := gatt.NewGattService1(objectPath)
+		service, err := gatt.NewGattService1(dbus.ObjectPath(objectPath))
 		if err != nil {
 			return nil, err
 		}
@@ -125,6 +137,7 @@ type DeviceCharacteristic struct {
 	uuidWrapper
 
 	characteristic *gatt.GattCharacteristic1
+	property       chan *bluez.PropertyChanged // channel where notifications are reported
 }
 
 // UUID returns the UUID for this DeviceCharacteristic.
@@ -142,9 +155,12 @@ func (c *DeviceCharacteristic) UUID() UUID {
 // Passing a nil slice of UUIDs will return a complete
 // list of characteristics.
 func (s *DeviceService) DiscoverCharacteristics(uuids []UUID) ([]DeviceCharacteristic, error) {
-	chars := []DeviceCharacteristic{}
-	uuidChars := make(map[string]string)
-	characteristicsFound := 0
+	var chars []DeviceCharacteristic
+	if len(uuids) > 0 {
+		// The caller wants to get a list of characteristics in a specific
+		// order.
+		chars = make([]DeviceCharacteristic, len(uuids))
+	}
 
 	// Iterate through all objects managed by BlueZ, hoping to find the
 	// characteristic we're looking for.
@@ -156,51 +172,56 @@ func (s *DeviceService) DiscoverCharacteristics(uuids []UUID) ([]DeviceCharacter
 	if err != nil {
 		return nil, err
 	}
+	objects := make([]string, 0, len(list))
 	for objectPath := range list {
-		if !strings.HasPrefix(string(objectPath), string(s.service.Path())+"/char") {
+		objects = append(objects, string(objectPath))
+	}
+	sort.Strings(objects)
+	for _, objectPath := range objects {
+		if !strings.HasPrefix(objectPath, string(s.service.Path())+"/char") {
 			continue
 		}
-		suffix := string(objectPath)[len(s.service.Path()+"/"):]
+		suffix := objectPath[len(s.service.Path()+"/"):]
 		if len(strings.Split(suffix, "/")) != 1 {
 			continue
 		}
-		char, err := gatt.NewGattCharacteristic1(objectPath)
+		characteristic, err := gatt.NewGattCharacteristic1(dbus.ObjectPath(objectPath))
 		if err != nil {
 			return nil, err
 		}
+		cuuid, _ := ParseUUID(characteristic.Properties.UUID)
+		char := DeviceCharacteristic{
+			uuidWrapper:    cuuid,
+			characteristic: characteristic,
+		}
 
 		if len(uuids) > 0 {
-			found := false
-			for _, uuid := range uuids {
-				if char.Properties.UUID == uuid.String() {
-					// One of the services we're looking for.
-					found = true
+			// The caller wants to get a list of characteristics in a specific
+			// order. Check whether this is one of those.
+			for i, uuid := range uuids {
+				if chars[i] != (DeviceCharacteristic{}) {
+					// To support multiple identical characteristics, we need to
+					// ignore the characteristics that are already found. See:
+					// https://github.com/tinygo-org/bluetooth/issues/131
+					continue
+				}
+				if cuuid == uuid {
+					// one of the characteristics we're looking for.
+					chars[i] = char
 					break
 				}
 			}
-			if !found {
-				continue
-			}
+		} else {
+			// The caller wants to get all characteristics, in any order.
+			chars = append(chars, char)
 		}
-
-		if _, ok := uuidChars[char.Properties.UUID]; ok {
-			// There is more than one characteristic with the same UUID?
-			// Don't overwrite it, to keep the servicesFound count correct.
-			continue
-		}
-
-		uuid, _ := ParseUUID(char.Properties.UUID)
-		dc := DeviceCharacteristic{uuidWrapper: uuid,
-			characteristic: char,
-		}
-
-		chars = append(chars, dc)
-		characteristicsFound++
-		uuidChars[char.Properties.UUID] = char.Properties.UUID
 	}
 
-	if characteristicsFound < len(uuids) {
-		return nil, errors.New("bluetooth: could not find some characteristics")
+	// Check that we have found all characteristics.
+	for _, char := range chars {
+		if char == (DeviceCharacteristic{}) {
+			return nil, errors.New("bluetooth: could not find some characteristics")
+		}
 	}
 
 	return chars, nil
@@ -222,19 +243,69 @@ func (c DeviceCharacteristic) WriteWithoutResponse(p []byte) (n int, err error) 
 // Configuration Descriptor (CCCD). This means that most peripherals will send a
 // notification with a new value every time the value of the characteristic
 // changes.
-func (c DeviceCharacteristic) EnableNotifications(callback func(buf []byte)) error {
-	ch, err := c.characteristic.WatchProperties()
-	if err != nil {
-		return err
-	}
-	go func() {
-		for update := range ch {
-			if update.Interface == "org.bluez.GattCharacteristic1" && update.Name == "Value" {
-				callback(update.Value.([]byte))
-			}
+//
+// Users may call EnableNotifications with a nil callback to disable notifications.
+func (c *DeviceCharacteristic) EnableNotifications(callback func(buf []byte)) error {
+	switch callback {
+	default:
+		if c.property != nil {
+			return errDupNotif
 		}
-	}()
-	return c.characteristic.StartNotify()
+
+		ch, err := c.characteristic.WatchProperties()
+		if err != nil {
+			return err
+		}
+
+		err = c.characteristic.StartNotify()
+		if err != nil {
+			_ = c.characteristic.UnwatchProperties(ch)
+			return err
+		}
+		c.property = ch
+
+		go func() {
+			for update := range ch {
+				if update == nil {
+					continue
+				}
+				if update.Interface == "org.bluez.GattCharacteristic1" && update.Name == "Value" {
+					callback(update.Value.([]byte))
+				}
+			}
+		}()
+
+		return nil
+
+	case nil:
+		if c.property == nil {
+			return nil
+		}
+
+		e1 := c.characteristic.StopNotify()
+		e2 := c.characteristic.UnwatchProperties(c.property)
+		c.property = nil
+
+		// FIXME(sbinet): use errors.Join(e1, e2)
+		if e1 != nil {
+			return e1
+		}
+
+		if e2 != nil {
+			return e2
+		}
+
+		return nil
+	}
+}
+
+// GetMTU returns the MTU for the characteristic.
+func (c DeviceCharacteristic) GetMTU() (uint16, error) {
+	mtu, err := c.characteristic.GetProperty("MTU")
+	if err != nil {
+		return uint16(0), err
+	}
+	return mtu.Value().(uint16), nil
 }
 
 // Read reads the current characteristic value.
