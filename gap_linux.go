@@ -66,7 +66,7 @@ func (a *Advertisement) Start() error {
 	if a.advertisement != nil {
 		panic("todo: start advertisement a second time")
 	}
-	cancel, err := api.ExposeAdvertisement(a.adapter.id, a.properties, uint32(a.properties.Timeout))
+	cancel, err := api.ExposeAdvertisement(a.adapter.Id, a.properties, uint32(a.properties.Timeout))
 	if err != nil {
 		return err
 	}
@@ -103,8 +103,8 @@ func (a *Adapter) Scan(callback func(*Adapter, ScanResult)) error {
 	a.cancelChan = cancelChan
 
 	// This appears to be necessary to receive any BLE discovery results at all.
-	defer a.adapter.SetDiscoveryFilter(nil)
-	err := a.adapter.SetDiscoveryFilter(map[string]interface{}{
+	defer a.Adapter.SetDiscoveryFilter(nil)
+	err := a.Adapter.SetDiscoveryFilter(map[string]interface{}{
 		"Transport": "le",
 	})
 	if err != nil {
@@ -133,7 +133,7 @@ func (a *Adapter) Scan(callback func(*Adapter, ScanResult)) error {
 	// properties is known on a PropertiesChanged signal. We can't present the
 	// list of cached devices as scan results as devices may be cached for a
 	// long time, long after they have moved out of range.
-	deviceList, err := a.adapter.GetDevices()
+	deviceList, err := a.Adapter.GetDevices()
 	if err != nil {
 		return err
 	}
@@ -151,7 +151,7 @@ func (a *Adapter) Scan(callback func(*Adapter, ScanResult)) error {
 	}
 
 	// Instruct BlueZ to start discovering.
-	err = a.adapter.StartDiscovery()
+	err = a.Adapter.StartDiscovery()
 	if err != nil {
 		return err
 	}
@@ -163,7 +163,7 @@ func (a *Adapter) Scan(callback func(*Adapter, ScanResult)) error {
 		// StopScan is called).
 		select {
 		case <-cancelChan:
-			a.adapter.StopDiscovery()
+			a.Adapter.StopDiscovery()
 			return nil
 		default:
 		}
@@ -284,7 +284,7 @@ type Device struct {
 //
 // On Linux and Windows, the IsRandom part of the address is ignored.
 func (a *Adapter) Connect(address Address, params ConnectionParams) (*Device, error) {
-	devicePath := dbus.ObjectPath(string(a.adapter.Path()) + "/dev_" + strings.Replace(address.MAC.String(), ":", "_", -1))
+	devicePath := dbus.ObjectPath(string(a.Adapter.Path()) + "/dev_" + strings.Replace(address.MAC.String(), ":", "_", -1))
 	dev, err := device.NewDevice1(devicePath)
 	if err != nil {
 		return nil, err

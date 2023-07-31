@@ -20,7 +20,7 @@ type Characteristic struct {
 // Service struct.
 func (a *Adapter) AddService(s *Service) error {
 	app, err := service.NewApp(service.AppOptions{
-		AdapterID: a.id,
+		AdapterID: a.Id,
 	})
 	if err != nil {
 		return err
@@ -104,13 +104,16 @@ func (a *Adapter) AddService(s *Service) error {
 }
 
 // UpdateValue replaces the characteristic value with a new value without handling write callbacks
-func (c *Characteristic) UpdateValue(p []byte) (n int, err error) {
+func (c *Characteristic) UpdateValue(p []byte) (int, error) {
 	if len(p) == 0 {
 		return 0, nil // nothing to do
 	}
 
 	c.handle.Properties.Value = p
-	c.handle.DBusProperties().Instance().Set(c.handle.Interface(), "Value", dbus.MakeVariant(p))
+	dbusErr := c.handle.DBusProperties().Instance().Set(c.handle.Interface(), "Value", dbus.MakeVariant(p))
+	if dbusErr != nil {
+		return 0, dbusErr
+	}
 	return len(p), nil
 }
 

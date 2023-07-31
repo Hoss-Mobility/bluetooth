@@ -14,8 +14,8 @@ import (
 )
 
 type Adapter struct {
-	adapter              *adapter.Adapter1
-	id                   string
+	Adapter              *adapter.Adapter1
+	Id                   string
 	cancelChan           chan struct{}
 	defaultAdvertisement *Advertisement
 
@@ -35,21 +35,21 @@ var DefaultAdapter = &Adapter{
 // Enable configures the BLE stack. It must be called before any
 // Bluetooth-related calls (unless otherwise indicated).
 func (a *Adapter) Enable() (err error) {
-	if a.id == "" {
-		a.adapter, err = api.GetDefaultAdapter()
+	if a.Id == "" {
+		a.Adapter, err = api.GetDefaultAdapter()
 		if err != nil {
 			return
 		}
-		a.id, err = a.adapter.GetAdapterID()
+		a.Id, err = a.Adapter.GetAdapterID()
 	}
 	return nil
 }
 
 func (a *Adapter) Address() (MACAddress, error) {
-	if a.adapter == nil {
+	if a.Adapter == nil {
 		return MACAddress{}, errors.New("adapter not enabled")
 	}
-	mac, err := ParseMAC(a.adapter.Properties.Address)
+	mac, err := ParseMAC(a.Adapter.Properties.Address)
 	if err != nil {
 		return MACAddress{}, err
 	}
